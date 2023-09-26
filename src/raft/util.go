@@ -1,13 +1,16 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"os"
+)
 
 // Debugging
 const Debug = false
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
+func DPrintf(format string, a ...interface{}) {
+	logger := log.New(os.Stderr, "", log.Ltime|log.Lmicroseconds)
 	if Debug {
-		log.Printf(format, a...)
+		logger.Printf(format, a...)
 	}
-	return
 }
