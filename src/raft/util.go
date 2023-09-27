@@ -14,3 +14,10 @@ func DPrintf(format string, a ...interface{}) {
 		logger.Printf(format, a...)
 	}
 }
+
+func min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
+}

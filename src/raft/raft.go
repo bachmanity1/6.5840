@@ -63,10 +63,11 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
+	applyCh chan ApplyMsg
 	// persistent
 	currentTerm int
 	votedFor    int
-	log         []LogEntry
+	log         []*LogEntry
 	// volatile
 	commitIndex    int
 	lastApplied    int
@@ -182,7 +183,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []LogEntry
+	Entries      []*LogEntry
 	LeaderCommit int
 }
 
@@ -195,7 +196,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	DPrintf("received AppendEntries, id: %d, leaderId: %d, term: %d, currentTerm: %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+	DPrintf("received AppendEntries, id: %d, leaderId: %d, term: %d, currentTerm: %d, prevLogIndex: %d, prevLogTerm: %d, leaderCommitIndex: %d, lastLogIndex: %d", rf.me, args.LeaderId, args.Term, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, len(rf.log))
 	reply.Term = rf.currentTerm
 	reply.Success = false
 	if args.Term < rf.currentTerm {
@@ -204,8 +205,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.lastSuccessRpc = time.Now()
 	rf.leaderId = args.LeaderId
 	rf.currentTerm = args.Term
-
-	reply.Success = true // temp
+	reply.Term = rf.currentTerm
+	if args.PrevLogIndex != 0 && (args.PrevLogIndex < 0 || args.PrevLogIndex > len(rf.log) || args.PrevLogTerm != rf.log[args.PrevLogIndex-1].Term) {
+		return
+	}
+	for i, entry := range args.Entries {
+		index := args.PrevLogIndex + i + 1
+		if index > len(rf.log) || entry.Term != rf.log[index-1].Term {
+			rf.log = rf.log[:index-1]
+			rf.log = append(rf.log, args.Entries[i:]...)
+			break
+		}
+	}
+	if args.LeaderCommit > rf.commitIndex {
+		nextCommitIndex := rf.commitIndex + 1
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+		DPrintf("update follower's commitIndex to %d, followerId: %d, term: %d", rf.commitIndex, rf.me, rf.currentTerm)
+		rf.applyMessages(nextCommitIndex)
+	}
+	reply.Success = true
 }
 
 func (rf *Raft) startElection() {
@@ -267,6 +285,7 @@ func (rf *Raft) startElection() {
 			break
 		}
 	}
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -300,10 +319,12 @@ func (rf *Raft) sendAppendEntries() {
 				args.Term = rf.currentTerm
 				args.LeaderId = rf.me
 				args.LeaderCommit = rf.commitIndex
-				if rf.nextIndex[id] > 0 && len(rf.log) >= rf.nextIndex[id] {
-					args.PrevLogIndex = rf.nextIndex[id] - 1
-					args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-					args.Entries = rf.log[rf.nextIndex[id]:]
+				args.PrevLogIndex = rf.nextIndex[id] - 1
+				if args.PrevLogIndex > 0 && len(rf.log) >= args.PrevLogIndex {
+					args.PrevLogTerm = rf.log[args.PrevLogIndex-1].Term
+				}
+				if rf.nextIndex[id] >= 1 && len(rf.log) >= rf.nextIndex[id] {
+					args.Entries = rf.log[args.PrevLogIndex:]
 				}
 				reply := new(AppendEntriesReply)
 				rf.mu.RUnlock()
@@ -324,8 +345,27 @@ func (rf *Raft) sendAppendEntries() {
 				if reply.Success {
 					rf.nextIndex[id] = len(rf.log) + 1
 					rf.matchIndex[id] = len(rf.log)
-				} else {
+				} else if !reply.Success && rf.nextIndex[id] > 1 {
 					rf.nextIndex[id]--
+				}
+
+				for n := len(rf.log); n > rf.commitIndex; n-- {
+					if rf.log[n-1].Term < rf.currentTerm {
+						break
+					}
+					votes := 1
+					for _, matchIndex := range rf.matchIndex {
+						if matchIndex >= n {
+							votes++
+						}
+					}
+					if votes >= len(rf.peers)/2+1 {
+						DPrintf("update leader's commitIndex to %d, leaderId: %d, term: %d", n, rf.me, rf.currentTerm)
+						nextCommitIndex := rf.commitIndex + 1
+						rf.commitIndex = n
+						rf.applyMessages(nextCommitIndex)
+						break
+					}
 				}
 			}(id, peer)
 		}
@@ -337,6 +377,7 @@ func (rf *Raft) sendAppendEntries() {
 			return
 		}
 		rf.mu.RUnlock()
+
 		time.Sleep(heartbeatPeriod)
 	}
 
@@ -355,13 +396,27 @@ func (rf *Raft) sendAppendEntries() {
 // Term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (2B).
+	if rf.me != rf.leaderId {
+		return -1, -1, false
+	}
 
-	return index, term, isLeader
+	rf.log = append(rf.log, &LogEntry{rf.currentTerm, command})
+	DPrintf("leader %d added new log entry with index %d and term %d", rf.me, len(rf.log), rf.currentTerm)
+	return len(rf.log), rf.currentTerm, true
+}
+
+func (rf *Raft) applyMessages(nextCommitIndex int) {
+	for nextCommitIndex <= rf.commitIndex { // maybe duplicates ?
+		applyMsg := ApplyMsg{}
+		applyMsg.Command = rf.log[nextCommitIndex-1].Command
+		applyMsg.CommandIndex = nextCommitIndex
+		applyMsg.CommandValid = true
+		rf.applyCh <- applyMsg
+		nextCommitIndex++
+	}
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -412,11 +467,12 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.persister = persister
 	rf.me = me
 
-	rf.votedFor = -1             // load from disk
-	rf.currentTerm = 0           // load from disk
-	rf.log = make([]LogEntry, 0) // load from disk
+	rf.votedFor = -1              // load from disk
+	rf.currentTerm = 0            // load from disk
+	rf.log = make([]*LogEntry, 0) // load from disk
 	rf.leaderId = -1
 	rf.lastSuccessRpc = time.Now()
+	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
