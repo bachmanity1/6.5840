@@ -1,19 +1,20 @@
 #!/bin/bash
 
 N="${1:-10}"
-TYPE="${2:-}"
-TEMP_FILE="raft_test_output"
+TEST_NAME="${2:-}"
+TEMP_FILE="test-output-$TEST_NAME"
+[[ -n $TEST_NAME ]] && OPTS="-run $TEST_NAME" || TEMP_FILE="test-output-raft"
+[[ -e $TEMP_FILE ]] && rm $TEMP_FILE
 
 for ((i=1; i<=$N; i++))
 do
-    go test -race -run $TYPE >> $TEMP_FILE
+    go test -race $OPTS >> $TEMP_FILE
 done
 
-FAILS=$(cat $TEMP_FILE | grep FAIL: | wc -l | sed -e 's/^[[:space:]]*//')
+FAILS=$(cat $TEMP_FILE | grep 'FAIL	6.5840/raft' | wc -l | sed -e 's/^[[:space:]]*//')
 if [ "$FAILS" -gt 0 ]; then
-    echo "FAILED: There are $FAILS fails in $N iterations of $TYPE test"
+    echo "FAILED: There are $FAILS fails in $N iterations of $TEST_NAME test"
 else
-    echo "PASSED: All $N iterations of $TYPE test passed"
+    echo "PASSED: All $N iterations of $TEST_NAME test passed"
+    rm $TEMP_FILE
 fi
-
-rm $TEMP_FILE
