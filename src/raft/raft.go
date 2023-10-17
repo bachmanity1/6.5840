@@ -29,8 +29,9 @@ import (
 )
 
 const (
-	electionTimeoutBase = 1000
+	ElectionTimeoutBase = 1000
 	heartbeatPeriod     = 100
+	appendPeriod        = 20
 )
 
 type ApplyMsg struct {
@@ -170,8 +171,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 
 	DPrintf("taking snapshot, id: %d, index: %d, currentTerm: %d", rf.me, index, rf.currentTerm)
-	if index > rf.lastLogIndex() {
-		DPrintf("abort snapshot, index is too high, id: %d, index: %d, lastLogIndex: %d", rf.me, index, rf.lastLogIndex())
+	if index < rf.offset || index > rf.lastLogIndex() {
+		DPrintf("abort snapshot, index out of bounds, id: %d, index: %d, offset: %d, lastLogIndex: %d", rf.me, index, rf.offset, rf.lastLogIndex())
 		return
 	}
 	rf.log = rf.log[index-rf.offset+1:]
@@ -263,7 +264,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	for i, entry := range args.Entries {
 		index := args.PrevLogIndex + i + 1
-		if index > rf.lastLogIndex() || entry.Term != rf.log[index-rf.offset].Term {
+		if index > rf.lastLogIndex() || index >= rf.offset && entry.Term != rf.log[index-rf.offset].Term {
 			rf.log = rf.log[:index-rf.offset]
 			rf.log = append(rf.log, args.Entries[i:]...)
 			break
@@ -505,11 +506,14 @@ func (rf *Raft) sendAppendEntries() {
 			rf.mu.RUnlock()
 			return
 		}
+		sleepTime := heartbeatPeriod * time.Millisecond
+		if rf.lastLogIndex() > rf.commitIndex {
+			sleepTime = appendPeriod * time.Millisecond
+		}
 		rf.mu.RUnlock()
 
-		time.Sleep(heartbeatPeriod * time.Millisecond)
+		time.Sleep(sleepTime)
 	}
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -611,12 +615,12 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	electionTimeout := electionTimeoutBase + (rand.Int63() % electionTimeoutBase)
+	electionTimeout := ElectionTimeoutBase + (rand.Int63() % ElectionTimeoutBase)
 	DPrintf("server id: %d, initial electionTimeout: %d", rf.me, electionTimeout)
 	for !rf.killed() {
 		rf.mu.RLock()
 		if rf.me != rf.leaderId && time.Since(rf.lastSuccessRpc).Milliseconds() > electionTimeout {
-			electionTimeout = electionTimeoutBase + (rand.Int63() % electionTimeoutBase)
+			electionTimeout = ElectionTimeoutBase + (rand.Int63() % ElectionTimeoutBase)
 			DPrintf("server id: %d, updated electionTimeout: %d, currentTerm: %d", rf.me, electionTimeout, rf.currentTerm)
 			go rf.startElection()
 		}

@@ -4,6 +4,8 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"bytes"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -11,18 +13,30 @@ import (
 
 const Debug = false
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
+func DPrintf(format string, a ...interface{}) {
 	if Debug {
 		log.Printf(format, a...)
 	}
-	return
 }
 
+type OpType string
+
+const (
+	GET    OpType = "GET"
+	PUT    OpType = "PUT"
+	APPEND OpType = "APPEND"
+)
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	OpType
+	Key      string
+	Value    string
+	ReqId    int64
+	ClientId int
+}
+
+func (op Op) String() string {
+	return fmt.Sprintf("reqId: %d, type: %v, key: %v, value: %v", op.ReqId, op.OpType, op.Key, op.Value)
 }
 
 type KVServer struct {
@@ -30,20 +44,50 @@ type KVServer struct {
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
+	dead    int32
 
-	maxraftstate int // snapshot if log grows this big
+	maxraftstate int
+	persister    *raft.Persister
 
-	// Your definitions here.
+	store   map[string]string
+	applied map[int64]bool
+	prevReq map[int]int64
+	waiting map[int64]chan string
 }
 
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	kv.mu.Lock()
+	index, term, ok := kv.rf.Start(Op{GET, args.Key, "", args.ReqId, args.ClientId})
+	DPrintf("handle %v reqId: %d, serverId: %d, clientId: %v, key: %v, index: %v, term: %v, ok: %v", GET, args.ReqId, kv.me, args.ClientId, args.Key, index, term, ok)
+	if !ok {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	done := make(chan string)
+	kv.waiting[args.ReqId] = done
+	kv.mu.Unlock()
+
+	value := <-done
+	reply.Err = OK
+	reply.Value = value
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.mu.Lock()
+	index, term, ok := kv.rf.Start(Op{args.OpType, args.Key, args.Value, args.ReqId, args.ClientId})
+	DPrintf("handle %v reqId: %d, serverId: %d, clientId: %v, key: %v, index: %v, term: %v, ok: %v", args.OpType, args.ReqId, kv.me, args.ClientId, args.Key, index, term, ok)
+	if !ok {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	done := make(chan string)
+	kv.waiting[args.ReqId] = done
+	kv.mu.Unlock()
+
+	<-done
+	reply.Err = OK
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -85,13 +129,71 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.persister = persister
 
-	// You may need initialization code here.
-
+	kv.store = make(map[string]string)
+	kv.applied = make(map[int64]bool)
+	kv.prevReq = make(map[int]int64)
+	kv.waiting = make(map[int64]chan string)
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+	go kv.commitLogs()
 
 	return kv
+}
+
+func (kv *KVServer) commitLogs() {
+	for msg := range kv.applyCh {
+		kv.mu.Lock()
+		if msg.CommandValid {
+			DPrintf("commit log, serverId: %d, index: %v, %v", kv.me, msg.CommandIndex, msg.Command)
+			if msg.Command == nil {
+				DPrintf("got empty op, serverId: %d, apply message: %v", kv.me, msg)
+				continue
+			}
+			op := msg.Command.(Op)
+			value := kv.store[op.Key]
+			if !kv.applied[op.ReqId] {
+				if op.OpType == APPEND {
+					value += op.Value
+				} else if op.OpType == PUT {
+					value = op.Value
+				}
+				kv.store[op.Key] = value
+				kv.applied[op.ReqId] = true
+				delete(kv.applied, kv.prevReq[op.ClientId])
+				kv.prevReq[op.ClientId] = op.ReqId
+			}
+			done, ok := kv.waiting[op.ReqId]
+			if ok {
+				done <- value
+			}
+			delete(kv.waiting, op.ReqId)
+
+			if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				DPrintf("take snapshot, serverId: %d, raftStateSize: %d, maxRaftStateSize: %d", kv.me, kv.persister.ReadRaftState(), kv.maxraftstate)
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.store)
+				e.Encode(kv.applied)
+				e.Encode(kv.prevReq)
+				kv.rf.Snapshot(msg.CommandIndex, w.Bytes())
+			}
+		} else if msg.SnapshotValid {
+			DPrintf("apply snapshot, serverId: %d, index: %d, term: %d", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			r := bytes.NewBuffer(msg.Snapshot)
+			d := labgob.NewDecoder(r)
+			var newStore map[string]string
+			var newApplied map[int64]bool
+			var newPrevReq map[int]int64
+			if d.Decode(&newStore) != nil || d.Decode(&newApplied) != nil || d.Decode(&newPrevReq) != nil {
+				log.Fatalf("snapshot decode error, serverId: %d, index: %d, term: %d", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			}
+			kv.store = newStore
+			kv.applied = newApplied
+			kv.prevReq = newPrevReq
+		}
+		kv.mu.Unlock()
+	}
 }
