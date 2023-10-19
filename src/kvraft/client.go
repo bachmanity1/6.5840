@@ -26,7 +26,6 @@ type Clerk struct {
 	servers  []*labrpc.ClientEnd
 	leaderId int
 	cliId    int
-	mu       sync.Mutex
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
@@ -49,15 +48,13 @@ func (ck *Clerk) Get(key string) string {
 	value := ""
 	for {
 		reply := new(GetReply)
-		ck.call("KVServer.Get", args, reply)
+		ck.call(ck.leaderId, "KVServer.Get", args, reply)
 
 		if reply.Err == OK {
 			value = reply.Value
 			break
 		} else if reply.Err == ErrTimeout || reply.Err == ErrWrongLeader {
-			ck.mu.Lock()
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			ck.mu.Unlock()
 		} else {
 			log.Fatalf("unexpected err code: %v, reqId: %d, clientId: %d, leaderId: %v, key: %v",
 				reply.Err, args.ReqId, ck.cliId, ck.leaderId, key)
@@ -76,14 +73,12 @@ func (ck *Clerk) PutAppend(key string, value string, op OpType) {
 
 	for {
 		reply := new(PutAppendReply)
-		ck.call("KVServer.PutAppend", args, reply)
+		ck.call(ck.leaderId, "KVServer.PutAppend", args, reply)
 
 		if reply.Err == OK {
 			break
 		} else if reply.Err == ErrTimeout || reply.Err == ErrWrongLeader {
-			ck.mu.Lock()
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			ck.mu.Unlock()
 		} else {
 			log.Fatalf("unexpected err code: %v, reqId: %d, clientId: %d, leaderId: %v, op: %v, key: %v, value: %v",
 				reply.Err, args.ReqId, ck.cliId, ck.leaderId, op, key, value)
@@ -98,24 +93,21 @@ func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, APPEND)
 }
 
-func (ck *Clerk) call(svcMethod string, args interface{}, reply interface{}) {
+func (ck *Clerk) call(leaderId int, svcMethod string, args interface{}, reply interface{}) {
 	done := make(chan bool)
+	noResponse := false
 	go func() {
-		ok := ck.servers[ck.leaderId].Call(svcMethod, args, reply)
-		if !ok {
-			switch r := reply.(type) {
-			case *GetReply:
-				r.Err = ErrTimeout
-			case *PutAppendReply:
-				r.Err = ErrTimeout
-			}
-		}
-		done <- true
+		done <- ck.servers[leaderId].Call(svcMethod, args, reply)
 	}()
 
 	select {
-	case <-done:
+	case ok := <-done:
+		noResponse = !ok
 	case <-time.After(raft.ElectionTimeoutBase * time.Millisecond):
+		noResponse = true
+	}
+
+	if noResponse {
 		var reqId int64
 		switch r := reply.(type) {
 		case *GetReply:
@@ -125,6 +117,6 @@ func (ck *Clerk) call(svcMethod string, args interface{}, reply interface{}) {
 			r.Err = ErrTimeout
 			reqId = args.(*PutAppendArgs).ReqId
 		}
-		DPrintf("request timeout, clientId: %d, leaderId: %d, reqId: %d", ck.cliId, ck.leaderId, reqId)
+		DPrintf("request timeout reqId: %d, clientId: %d, leaderId: %d", reqId, ck.cliId, leaderId)
 	}
 }

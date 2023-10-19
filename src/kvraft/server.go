@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -14,8 +15,11 @@ import (
 const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
+	blue := "\033[34m"
+	logger := log.New(os.Stderr, "", log.Ltime|log.Lmicroseconds)
 	if Debug {
-		log.Printf(format, a...)
+		x := fmt.Sprintf(format, a...)
+		logger.Println(blue, x)
 	}
 }
 
@@ -58,12 +62,12 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	index, term, ok := kv.rf.Start(Op{GET, args.Key, "", args.ReqId, args.ClientId})
-	DPrintf("handle %v reqId: %d, serverId: %d, clientId: %v, key: %v, index: %v, term: %v, ok: %v", GET, args.ReqId, kv.me, args.ClientId, args.Key, index, term, ok)
 	if !ok {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
+	DPrintf("handle %v reqId: %d, serverId: %d, clientId: %v, key: %v, index: %v, term: %v", GET, args.ReqId, kv.me, args.ClientId, args.Key, index, term)
 	done := make(chan string)
 	kv.waiting[args.ReqId] = done
 	kv.mu.Unlock()
@@ -76,12 +80,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	index, term, ok := kv.rf.Start(Op{args.OpType, args.Key, args.Value, args.ReqId, args.ClientId})
-	DPrintf("handle %v reqId: %d, serverId: %d, clientId: %v, key: %v, index: %v, term: %v, ok: %v", args.OpType, args.ReqId, kv.me, args.ClientId, args.Key, index, term, ok)
 	if !ok {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
+	DPrintf("handle %v reqId: %d, serverId: %d, clientId: %v, key: %v, index: %v, term: %v", args.OpType, args.ReqId, kv.me, args.ClientId, args.Key, index, term)
 	done := make(chan string)
 	kv.waiting[args.ReqId] = done
 	kv.mu.Unlock()
@@ -99,6 +103,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // about this, but it may be convenient (for example)
 // to suppress debug output from a Kill()ed instance.
 func (kv *KVServer) Kill() {
+	DPrintf("server %d killed", kv.me)
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
@@ -136,9 +141,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.prevReq = make(map[int]int64)
 	kv.waiting = make(map[int64]chan string)
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	go kv.commitLogs()
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	return kv
 }
@@ -171,24 +176,25 @@ func (kv *KVServer) commitLogs() {
 			}
 			delete(kv.waiting, op.ReqId)
 
-			if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-				DPrintf("take snapshot, serverId: %d, raftStateSize: %d, maxRaftStateSize: %d", kv.me, kv.persister.ReadRaftState(), kv.maxraftstate)
+			if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= 8*kv.maxraftstate-500 {
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
 				e.Encode(kv.store)
 				e.Encode(kv.applied)
 				e.Encode(kv.prevReq)
 				kv.rf.Snapshot(msg.CommandIndex, w.Bytes())
+				DPrintf("take snapshot, serverId: %d, raftStateSize: %d, maxRaftStateSize: %d, snapshotSize: %d",
+					kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, kv.persister.SnapshotSize())
 			}
 		} else if msg.SnapshotValid {
-			DPrintf("apply snapshot, serverId: %d, index: %d, term: %d", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			DPrintf("install snapshot, serverId: %d", kv.me)
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
 			var newStore map[string]string
 			var newApplied map[int64]bool
 			var newPrevReq map[int]int64
 			if d.Decode(&newStore) != nil || d.Decode(&newApplied) != nil || d.Decode(&newPrevReq) != nil {
-				log.Fatalf("snapshot decode error, serverId: %d, index: %d, term: %d", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+				log.Fatalf("snapshot decode error, serverId: %d", kv.me)
 			}
 			kv.store = newStore
 			kv.applied = newApplied

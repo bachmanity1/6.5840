@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"os"
 )
@@ -9,9 +10,11 @@ import (
 const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
+	green := "\033[32m"
 	logger := log.New(os.Stderr, "", log.Ltime|log.Lmicroseconds)
 	if Debug {
-		logger.Printf(format, a...)
+		x := fmt.Sprintf(format, a...)
+		logger.Println(green, x)
 	}
 }
 
