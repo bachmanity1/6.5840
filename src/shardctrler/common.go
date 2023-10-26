@@ -1,5 +1,7 @@
 package shardctrler
 
+import "6.5840/labgob"
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -17,6 +19,20 @@ package shardctrler
 // You will need to add fields to the RPC argument structs.
 //
 
+func init() {
+	labgob.Register(JoinArgs{})
+	labgob.Register(JoinReply{})
+
+	labgob.Register(LeaveArgs{})
+	labgob.Register(LeaveReply{})
+
+	labgob.Register(MoveArgs{})
+	labgob.Register(MoveReply{})
+
+	labgob.Register(QueryArgs{})
+	labgob.Register(QueryReply{})
+}
+
 // The number of shards.
 const NShards = 10
 
@@ -28,46 +44,64 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
-const (
-	OK = "OK"
-)
+func from(src Config) Config {
+	dst := Config{}
+	dst.Num = src.Num
+	for i := 0; i < len(src.Shards); i++ {
+		dst.Shards[i] = src.Shards[i]
+	}
+	dst.Groups = make(map[int][]string)
+	for gid, servers := range src.Groups {
+		dst.Groups[gid] = servers
+	}
+	return dst
+}
 
 type Err string
 
+const (
+	OK          Err = "OK"
+	WrongLeader Err = "WrongLeader"
+)
+
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	ReqId    int64
+	ClientId int
+	Servers  map[int][]string // new GID -> servers mappings
 }
 
 type JoinReply struct {
-	WrongLeader bool
-	Err         Err
+	Err Err
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	ReqId    int64
+	ClientId int
+	GIDs     []int
 }
 
 type LeaveReply struct {
-	WrongLeader bool
-	Err         Err
+	Err Err
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	ReqId    int64
+	ClientId int
+	Shard    int
+	GID      int
 }
 
 type MoveReply struct {
-	WrongLeader bool
-	Err         Err
+	Err Err
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	ReqId    int64
+	ClientId int
+	Num      int // desired config number
 }
 
 type QueryReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
+	Err    Err
+	Config Config
 }
