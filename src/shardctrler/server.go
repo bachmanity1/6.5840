@@ -13,11 +13,11 @@ import (
 const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
-	blue := "\033[34m"
+	green := "\033[32m"
 	logger := log.New(os.Stderr, "", log.Ltime|log.Lmicroseconds)
 	if Debug {
 		x := fmt.Sprintf(format, a...)
-		logger.Println(blue, x)
+		logger.Println(green, x)
 	}
 }
 
@@ -29,7 +29,7 @@ type ShardCtrler struct {
 
 	configs []Config // indexed by config num
 	applied map[int64]bool
-	prevReq map[int]int64
+	prevReq map[int64]int64
 	waiting map[int64]chan bool
 }
 
@@ -92,7 +92,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		sc.mu.Unlock()
 		return
 	}
-	DPrintf("handle QUERY reqId: %d, serverId: %d, clientId: %v, index: %v, term: %v", args.ReqId, sc.me, args.ClientId, index, term)
+	DPrintf("handle QUERY reqId: %d, serverId: %d, clientId: %v, index: %v, term: %v, configLen: %d", args.ReqId, sc.me, args.ClientId, index, term, len(sc.configs))
 	done := make(chan bool)
 	sc.waiting[args.ReqId] = done
 	sc.mu.Unlock()
@@ -131,9 +131,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.me = me
 
 	sc.configs = make([]Config, 1)
-	sc.configs[0].Groups = map[int][]string{}
+	sc.configs[0].Groups = make(map[int][]string)
 	sc.applied = make(map[int64]bool)
-	sc.prevReq = make(map[int]int64)
+	sc.prevReq = make(map[int64]int64)
 	sc.waiting = make(map[int64]chan bool)
 	sc.applyCh = make(chan raft.ApplyMsg)
 
@@ -153,7 +153,7 @@ func (sc *ShardCtrler) commitLogs() {
 			}
 
 			var reqId int64
-			var clientId int
+			var clientId int64
 			switch args := msg.Command.(type) {
 			case JoinArgs:
 				DPrintf("committing JOIN request, serverId: %d, index: %d, cmd: %v", sc.me, msg.CommandIndex, msg.Command)
@@ -165,10 +165,9 @@ func (sc *ShardCtrler) commitLogs() {
 					}
 					sc.rebalance(&nextConfig)
 					sc.configs = append(sc.configs, nextConfig)
-
-					reqId = args.ReqId
-					clientId = args.ClientId
 				}
+				reqId = args.ReqId
+				clientId = args.ClientId
 			case LeaveArgs:
 				DPrintf("committing LEAVE request, serverId: %d, index: %d, cmd: %v", sc.me, msg.CommandIndex, msg.Command)
 				if !sc.applied[args.ReqId] {
@@ -179,10 +178,9 @@ func (sc *ShardCtrler) commitLogs() {
 					}
 					sc.rebalance(&nextConfig)
 					sc.configs = append(sc.configs, nextConfig)
-
-					reqId = args.ReqId
-					clientId = args.ClientId
 				}
+				reqId = args.ReqId
+				clientId = args.ClientId
 			case MoveArgs:
 				DPrintf("committing MOVE request, serverId: %d, index: %d, cmd: %v", sc.me, msg.CommandIndex, msg.Command)
 				if !sc.applied[args.ReqId] {
@@ -190,10 +188,9 @@ func (sc *ShardCtrler) commitLogs() {
 					nextConfig.Num++
 					nextConfig.Shards[args.Shard] = args.GID
 					sc.configs = append(sc.configs, nextConfig)
-
-					reqId = args.ReqId
-					clientId = args.ClientId
 				}
+				reqId = args.ReqId
+				clientId = args.ClientId
 			case QueryArgs:
 				DPrintf("committing QUERY request, serverId: %d, index: %d, cmd: %v", sc.me, msg.CommandIndex, msg.Command)
 

@@ -643,6 +643,12 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) IsAllCommitted() bool {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	return rf.commitIndex == rf.lastLogIndex()
+}
+
 func (rf *Raft) ticker() {
 	electionTimeout := ElectionTimeoutBase + (rand.Int63() % ElectionTimeoutBase)
 	DPrintf("server id: %d, initial electionTimeout: %d", rf.me, electionTimeout)

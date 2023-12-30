@@ -1,5 +1,7 @@
 package shardkv
 
+import "6.5840/labgob"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -9,24 +11,39 @@ package shardkv
 // You will have to modify these definitions.
 //
 
+func init() {
+	labgob.Register(GetArgs{})
+	labgob.Register(PutAppendArgs{})
+	labgob.Register(RequestShardArgs{})
+	labgob.Register(AddShard{})
+	labgob.Register(RemoveShard{})
+	labgob.Register(UpdateConfig{})
+}
+
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK             Err = "OK"
+	ErrNoKey       Err = "ErrNoKey"
+	ErrWrongGroup  Err = "ErrWrongGroup"
+	ErrWrongLeader Err = "ErrWrongLeader"
+	ErrTransient   Err = "ErrTransient"
 )
 
 type Err string
 
+type Op string
+
+const (
+	PUT    Op = "PUT"
+	APPEND Op = "APPEND"
+)
+
 // Put or Append
 type PutAppendArgs struct {
-	// You'll have to add definitions here.
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	ReqId    int64
+	ClientId int64
+	Key      string
+	Value    string
+	Op       Op
 }
 
 type PutAppendReply struct {
@@ -34,11 +51,46 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key string
-	// You'll have to add definitions here.
+	ReqId    int64
+	ClientId int64
+	Key      string
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type RequestShardArgs struct {
+	ReqId     int64
+	ClientId  int64
+	Gid       int
+	Shard     int
+	ConfigNum int
+}
+
+type RequestShardReply struct {
+	Err  Err
+	Logs map[string]string
+}
+
+type RemoveShard struct {
+	Shard     int
+	ConfigNum int
+}
+
+type AddShard struct {
+	Shard int
+	Logs  map[string]string
+}
+
+type UpdateConfig struct {
+	ConfigNum int
+}
+
+func max(x, y int) int {
+	if x > y {
+		return x
+	}
+	return y
 }

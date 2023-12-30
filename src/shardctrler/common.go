@@ -66,7 +66,7 @@ const (
 
 type JoinArgs struct {
 	ReqId    int64
-	ClientId int
+	ClientId int64
 	Servers  map[int][]string // new GID -> servers mappings
 }
 
@@ -76,7 +76,7 @@ type JoinReply struct {
 
 type LeaveArgs struct {
 	ReqId    int64
-	ClientId int
+	ClientId int64
 	GIDs     []int
 }
 
@@ -86,7 +86,7 @@ type LeaveReply struct {
 
 type MoveArgs struct {
 	ReqId    int64
-	ClientId int
+	ClientId int64
 	Shard    int
 	GID      int
 }
@@ -97,7 +97,7 @@ type MoveReply struct {
 
 type QueryArgs struct {
 	ReqId    int64
-	ClientId int
+	ClientId int64
 	Num      int // desired config number
 }
 

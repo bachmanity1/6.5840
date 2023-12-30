@@ -16,7 +16,7 @@ var nextClientId int64 = 0
 
 type Clerk struct {
 	servers  []*labrpc.ClientEnd
-	clientId int
+	clientId int64
 }
 
 func nrand() int64 {
@@ -29,8 +29,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.clientId = int(nextClientId)
-	atomic.AddInt64(&nextClientId, 1)
+	ck.clientId = atomic.AddInt64(&nextClientId, 1)
 	return ck
 }
 
